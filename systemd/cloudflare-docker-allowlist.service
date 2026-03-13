@@ -1,0 +1,11 @@
+[Unit]
+Description=Allowlist Cloudflare to Docker ports 80/443
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cloudflare-docker-allowlist.sh
+
+[Install]
+WantedBy=multi-user.target
