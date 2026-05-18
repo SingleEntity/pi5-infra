@@ -104,6 +104,10 @@ main() {
     -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET4" src -j RETURN
 
   ensure_rule iptables \
+    -p tcp -m multiport --dports 80,443 -i docker0 -j RETURN -- \
+    -p tcp -m multiport --dports 80,443 -i docker0 -j RETURN
+
+  ensure_rule iptables \
     -p tcp -m multiport --dports 80,443 -i br+ -j RETURN -- \
     -p tcp -m multiport --dports 80,443 -i br+ -j RETURN
 
@@ -124,6 +128,10 @@ main() {
     ensure_rule ip6tables \
       -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET6" src -j RETURN -- \
       -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET6" src -j RETURN
+
+    ensure_rule ip6tables \
+      -p tcp -m multiport --dports 80,443 -i docker0 -j RETURN -- \
+      -p tcp -m multiport --dports 80,443 -i docker0 -j RETURN
 
     ensure_rule ip6tables \
       -p tcp -m multiport --dports 80,443 -i br+ -j RETURN -- \
