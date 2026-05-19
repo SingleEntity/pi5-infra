@@ -1,0 +1,13 @@
+- type: filestream
+  id: host-network-traffic
+  enabled: true
+  paths:
+    - /var/log/host-network-traffic/*.jsonl
+  parsers:
+    - ndjson:
+        overwrite_keys: false
+        add_error_key: true
+        target: ""
+  fields:
+    log_category: host_network_traffic
+  fields_under_root: true

@@ -1,0 +1,10 @@
+/var/log/host-network-traffic/*.jsonl {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

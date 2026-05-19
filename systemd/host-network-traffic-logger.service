@@ -1,0 +1,12 @@
+[Unit]
+Description=Log one host network traffic sample
+
+[Service]
+Type=oneshot
+Environment=NETWORK_TRAFFIC_INTERFACE=
+Environment=NETWORK_TRAFFIC_ROLE=
+Environment=NETWORK_TRAFFIC_SITE=home
+Environment=NETWORK_TRAFFIC_LOG_DIR=/var/log/host-network-traffic
+Environment=NETWORK_TRAFFIC_STATE_DIR=/var/lib/host-network-traffic
+EnvironmentFile=-/etc/default/host-network-traffic-logger
+ExecStart=/usr/bin/python3 /usr/local/sbin/host-network-traffic-logger.py --interface ${NETWORK_TRAFFIC_INTERFACE} --role ${NETWORK_TRAFFIC_ROLE} --site ${NETWORK_TRAFFIC_SITE} --log-dir ${NETWORK_TRAFFIC_LOG_DIR} --state-dir ${NETWORK_TRAFFIC_STATE_DIR}
