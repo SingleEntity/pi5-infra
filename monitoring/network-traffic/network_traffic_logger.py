@@ -220,30 +220,13 @@ def build_record(
 
     record = {
         "timestamp": utc_timestamp(),
-        "level": "info",
-        "logger": "network_traffic",
-        "event": "network_sample",
         "host_name": hostname,
         "site": site,
         "role": role,
         "interface": interface,
-        "operstate": read_operstate(interface),
-        "link_speed_mbps": read_speed_mbps(interface),
-        "rx_bytes_total": counters.rx_bytes,
-        "tx_bytes_total": counters.tx_bytes,
-        "rx_packets_total": counters.rx_packets,
-        "tx_packets_total": counters.tx_packets,
-        "rx_errs_total": counters.rx_errs,
-        "tx_errs_total": counters.tx_errs,
-        "rx_drop_total": counters.rx_drop,
-        "tx_drop_total": counters.tx_drop,
         "window_seconds": window_seconds,
         "rx_bytes_delta": rx_bytes_delta,
         "tx_bytes_delta": tx_bytes_delta,
-        "rx_packets_delta": rx_packets_delta,
-        "tx_packets_delta": tx_packets_delta,
-        "rx_bytes_per_second": (rx_bytes_delta / window_seconds) if rx_bytes_delta is not None and window_seconds else None,
-        "tx_bytes_per_second": (tx_bytes_delta / window_seconds) if tx_bytes_delta is not None and window_seconds else None,
     }
     return record, current_state
 

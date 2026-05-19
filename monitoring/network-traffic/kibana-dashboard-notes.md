@@ -8,10 +8,10 @@ Which Raspberry Pi was moving unusual traffic when the home network became slow?
 
 1. Line chart: `tx_bytes_delta` over time, split by `host_name`
 2. Line chart: `rx_bytes_delta` over time, split by `host_name`
-3. Line chart: `tx_bytes_per_second` over time, split by `host_name`
-4. Line chart: `rx_bytes_per_second` over time, split by `host_name`
-5. Table: max `tx_bytes_per_second` and `rx_bytes_per_second` by `host_name`
-6. Table: latest `interface`, `role`, and `operstate` by `host_name`
+3. Formula line chart: `tx_bytes_delta / window_seconds` over time, split by `host_name`
+4. Formula line chart: `rx_bytes_delta / window_seconds` over time, split by `host_name`
+5. Table: max derived tx/rx bytes-per-second by `host_name`
+6. Table: latest `interface` and `role` by `host_name`
 
 ## Useful filters
 
@@ -26,7 +26,6 @@ Which Raspberry Pi was moving unusual traffic when the home network became slow?
 
 - Large sustained `tx_bytes_delta` often means uploads, backups, or media streaming.
 - Large sustained `rx_bytes_delta` often means downloads, updates, or inbound replication.
-- Rising `tx_drop_total` or `rx_drop_total` suggests interface-level problems rather than normal usage.
 - `window_seconds` should remain close to the timer cadence; large gaps suggest missed runs or host sleep/restart.
 
 ## Suggested alert ideas

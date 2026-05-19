@@ -171,6 +171,12 @@ The installer writes:
 - `/etc/systemd/system/host-network-traffic-logger.timer`
 - `/etc/systemd/system/host-network-traffic-logger.timer.d/override.conf`
 
+For `pi5`, the repo-managed host config now points the JSONL output at the mounted project log disk:
+
+- `/mnt/website_and_cold_storage/website/logs/host-network-traffic/`
+
+That sits alongside the other project log directories already living under `/mnt/website_and_cold_storage/website/logs/`.
+
 ### Example commands per host
 
 Pi5:
@@ -178,6 +184,10 @@ Pi5:
 ```bash
 sudo ./install-host-network-traffic-logger.sh --config-file config/hosts/pi5-host-network-traffic-logger.env
 ```
+
+That config writes logs to:
+
+- `/mnt/website_and_cold_storage/website/logs/host-network-traffic/`
 
 Pi4:
 
@@ -232,10 +242,23 @@ Example ingest snippets live here:
 Recommended approach:
 
 1. Use Filebeat `filestream` with NDJSON parsing against `/var/log/host-network-traffic/*.jsonl`.
-2. Preserve fields like `host_name`, `role`, `site`, `tx_bytes_delta`, and `rx_bytes_delta` at the top level.
-3. In Logstash, rename `event` to `event_name` to avoid collisions with ECS conventions.
+2. Preserve fields like `host_name`, `role`, `site`, `tx_bytes_delta`, `rx_bytes_delta`, and `window_seconds` at the top level.
+3. In Logstash, coerce `rx_bytes_delta`, `tx_bytes_delta`, and `window_seconds` to numeric types if your pipeline would otherwise treat them as strings.
 
 Dashboard guidance lives in `monitoring/network-traffic/kibana-dashboard-notes.md`.
+
+The logger now emits a deliberately slim event shape:
+
+- `timestamp`
+- `host_name`
+- `site`
+- `role`
+- `interface`
+- `window_seconds`
+- `rx_bytes_delta`
+- `tx_bytes_delta`
+
+If you want bytes-per-second in Kibana, derive it from `*_bytes_delta / window_seconds` rather than storing the precomputed rate in every event.
 
 ## Structure and naming
 
