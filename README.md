@@ -2,90 +2,177 @@
 
 Tracked host-level infrastructure for the Pi5, with room for shared homelab host tooling.
 
-This repository exists to prevent production security and operational scripts from becoming untracked server state. It started with Pi5-specific live-host protection, but it is also a sensible place for shared host-level utilities used across `pi5`, `pi4`, and `pi3` when those utilities are not tied to a single application repository.
+This repository exists so production security and operational scripts do not become untracked server state.
 
-## Contents
+It currently contains two main jobs:
 
-- `cloudflare-docker-allowlist/cloudflare-docker-allowlist.sh`
-- `monitoring/network-traffic/network_traffic_logger.py`
-- `monitoring/network-traffic/kibana-dashboard-notes.md`
-- `systemd/cloudflare-docker-allowlist.service`
-- `systemd/cloudflare-docker-allowlist.timer`
-- `systemd/host-network-traffic-logger.service`
-- `systemd/host-network-traffic-logger.timer`
-- `config/host-network-traffic-logger.env.example`
-- `config/hosts/pi5-host-network-traffic-logger.env`
-- `config/hosts/pi4-host-network-traffic-logger.env`
-- `config/hosts/pi3-host-network-traffic-logger.env`
-- `logrotate/host-network-traffic-logger`
+1. A Cloudflare Docker allowlist that protects published `80/443` traffic.
+2. A host network traffic logger that writes JSONL samples for later analysis in ELK.
+
+## Quick mental model
+
+If you come back to this repo after months away, this is the main pattern to remember:
+
+- the real work is done by a script or Python program
+- a `.service` file tells `systemd` how to run that job
+- a `.timer` file tells `systemd` when to run that job
+- an installer script copies everything to the live machine and enables the right timer
+
+Think of it like this:
+
+- `.service` = what to run
+- `.timer` = when to run it
+- installer = how it gets onto the host
+
+This is standard Linux `systemd` behavior, not a custom convention invented in this repo.
+
+## Repo map
+
+### Cloudflare allowlist
+
+- `cloudflare-docker-allowlist/cloudflare-docker-allowlist.sh`: the actual firewall script
+- `systemd/cloudflare-docker-allowlist.service`: how to run that script as a systemd job
+- `systemd/cloudflare-docker-allowlist.timer`: when to run it again automatically
+- `install-cloudflare-docker-allowlist.sh`: copies those files into the live system and enables them
+
+### Traffic logger
+
+- `monitoring/network-traffic/network_traffic_logger.py`: the actual logger program
+- `systemd/host-network-traffic-logger.service`: how to run one logger sample
+- `systemd/host-network-traffic-logger.timer`: when to run that sample again
+- `config/host-network-traffic-logger.env.example`: example host config
+- `config/hosts/pi5-host-network-traffic-logger.env`: Pi5 host config
+- `config/hosts/pi4-host-network-traffic-logger.env`: Pi4 host config
+- `config/hosts/pi3-host-network-traffic-logger.env`: Pi3 host config
+- `logrotate/host-network-traffic-logger`: log rotation policy
+- `install-host-network-traffic-logger.sh`: installs the logger, config, timer, and logrotate policy
+
+### ELK ingest examples
+
 - `elk/filebeat/host-network-traffic-input.yml`
 - `elk/logstash/host-network-traffic.conf`
-- `install-cloudflare-docker-allowlist.sh`
-- `install-host-network-traffic-logger.sh`
+- `monitoring/network-traffic/kibana-dashboard-notes.md`
 
-## What it does
+## How `systemd` service and timer pairs work
 
-The Cloudflare allowlist workflow manages the Linux firewall rule chain that Docker uses for forwarded traffic.
+This repo uses a common `systemd` pattern.
 
-In practical terms, this setup is trying to answer one question:
+A `.service` file describes a job. It usually contains:
 
-"When traffic is heading to a container on ports `80` or `443`, should it be allowed through or dropped?"
+- a description
+- the command to run
+- optional environment variables or config file references
 
-The answer is controlled by the `DOCKER-USER` chain.
+A `.timer` file is the schedule for that service. It usually contains:
 
-The script does the following:
+- when to run after boot
+- how often to repeat
+- which `.service` it triggers
+
+For example, the traffic logger pair is:
+
+- `host-network-traffic-logger.service`
+- `host-network-traffic-logger.timer`
+
+Those matching names are intentional. It makes the pair easy to reason about.
+
+### What "active" and "inactive" usually mean here
+
+This matters because it is easy to misread `systemctl status`.
+
+For these jobs:
+
+- the timer is the thing that normally stays running and waiting
+- the service often runs once and exits
+
+So this is usually the healthy state:
+
+- timer: `active (waiting)`
+- service: `inactive (dead)` after a successful run
+
+That is normal for `Type=oneshot` services.
+
+## Cloudflare Docker allowlist
+
+### What problem it solves
+
+This workflow controls Docker-forwarded traffic for ports `80` and `443`.
+
+In plain English, it is answering this question:
+
+"If traffic is heading to a Docker-published web port, should it be allowed or dropped?"
+
+The answer is implemented in the `DOCKER-USER` firewall chain.
+
+### What the script actually does
+
+The script:
 
 - creates and refreshes the `cloudflare4` and `cloudflare6` `ipset` sets from Cloudflare's published IP ranges
-- inserts `DOCKER-USER` firewall rules for traffic involving Docker-published ports `80` and `443`
-- allows traffic from Cloudflare IPs to reach those published ports
-- allows traffic from the local LAN (`10.0.0.0/24` by default, overridable with `LAN_CIDR`)
-- allows traffic that is already part of an existing connection (`RELATED,ESTABLISHED`)
+- inserts `DOCKER-USER` rules for Docker-published `80/443` traffic
+- allows Cloudflare source IPs to reach those published ports
+- allows local LAN traffic from `10.0.0.0/24` by default, unless `LAN_CIDR` is changed
+- allows already-established traffic
 - allows traffic coming from Docker bridge interfaces such as `docker0` and `br-*`
 - drops the remaining traffic to Docker-published `80/443`
 
-This is intended to protect reverse proxies and web apps that are expected to sit behind Cloudflare.
+This is meant to protect reverse proxies and web apps that are expected to sit behind Cloudflare.
 
-## What it does not do
+### What it does not do
 
-This script is not a general firewall for the whole host.
+This script is not a full-machine firewall policy.
 
 It does not:
 
-- block or manage all ports on the machine
-- control non-Docker services directly
-- restrict all container networking
+- manage every port on the host
+- directly control non-Docker services
+- block all container networking
 
-It is narrowly focused on forwarded Docker traffic for ports `80` and `443`.
+It only targets forwarded Docker traffic for `80` and `443`.
 
-## Why containers can still reach the internet
+### Why containers can still do `apt-get update`
 
-This is the part that is easy to forget later.
+This is the easy-to-forget part.
 
-The rules intentionally allow traffic arriving from Docker bridge interfaces like `docker0` and `br-*` before the final drop rule.
+The rules intentionally allow traffic arriving from Docker bridge interfaces before the final drop rule.
 
-That means a container can still make outbound HTTP/HTTPS connections, including things like:
+That means containers can still make outbound HTTP and HTTPS requests, including:
 
 - `apt-get update`
 - package downloads
-- calling external APIs over `80` or `443`
+- API calls over `80/443`
 
-Without those Docker bridge exceptions, container traffic to remote web servers can be caught by the final drop rule, because that traffic also passes through `DOCKER-USER`.
+Without those Docker bridge `RETURN` rules, container traffic to remote web servers can be caught by the final drop rule because it also passes through `DOCKER-USER`.
 
-So if `apt-get update` inside a container was previously broken and later started working, these Docker bridge `RETURN` rules are the most likely reason.
+So if container `apt-get update` was once broken and later started working, these Docker bridge exceptions are the likely reason.
 
-## Rule logic in plain English
+### Rule logic in plain English
 
-For Docker-related traffic on ports `80` and `443`, the rules are effectively:
+For Docker-related traffic on `80` and `443`, the effective logic is:
 
-1. If the traffic belongs to an existing connection, allow it.
+1. If it is part of an existing connection, allow it.
 2. If it came from the local LAN, allow it.
 3. If it came from a Docker bridge interface, allow it.
 4. If it came from a Cloudflare IP, allow it.
 5. Otherwise, drop it.
 
-The exact order in `iptables -S DOCKER-USER` may look reversed, because the script inserts rules at the top of the chain one at a time. The end result on the Pi5 is still the intended allowlist behavior.
+If `iptables -S DOCKER-USER` looks visually reversed, that is because the script inserts rules at the top of the chain one by one.
 
-## Install or refresh on the Pi5
+### Boot behavior
+
+The allowlist installer enables both:
+
+- `cloudflare-docker-allowlist.service`
+- `cloudflare-docker-allowlist.timer`
+
+That means on boot:
+
+- the service can run as part of normal startup because it is enabled under `multi-user.target`
+- the timer also starts and triggers the service on its schedule
+
+In other words, this setup is slightly more aggressive than the traffic logger setup. It is designed so the allowlist comes back after reboot and also keeps refreshing later.
+
+### Install or refresh on the Pi5
 
 Run as root or via `sudo`:
 
@@ -97,13 +184,13 @@ sudo systemctl start cloudflare-docker-allowlist.timer
 
 What each command does:
 
-- `./install-cloudflare-docker-allowlist.sh` copies the script into `/usr/local/sbin/` and installs the systemd service and timer into `/etc/systemd/system/`
-- `sudo systemctl start cloudflare-docker-allowlist.service` runs the allowlist script immediately once
-- `sudo systemctl start cloudflare-docker-allowlist.timer` starts the daily refresh schedule immediately
+- `./install-cloudflare-docker-allowlist.sh`: copies the script to `/usr/local/sbin/`, installs the systemd files into `/etc/systemd/system/`, reloads `systemd`, and enables the service and timer
+- `sudo systemctl start cloudflare-docker-allowlist.service`: runs the allowlist immediately once
+- `sudo systemctl start cloudflare-docker-allowlist.timer`: starts the daily refresh schedule immediately
 
-The install script enables both the service and the timer so they start on future boots, but it does not start the timer right away. Starting the timer manually makes the current machine state obvious and avoids confusion later.
+The installer enables the timer for future boots, but it does not start the timer right away. That is why starting it manually is still useful after install.
 
-## Verification
+### Verify
 
 ```bash
 sudo systemctl status cloudflare-docker-allowlist.service
@@ -121,32 +208,95 @@ What to look for:
 - the timer should show `active (waiting)`
 - the timer list should show the next scheduled run time
 - the `cloudflare4` and `cloudflare6` sets should contain Cloudflare CIDR ranges
-- the `DOCKER-USER` chain should include `RETURN` rules for Cloudflare, Docker bridges, and established traffic, followed by a final `DROP` for `80,443`
+- the `DOCKER-USER` chain should include the expected `RETURN` rules followed by a final `DROP` for `80,443`
 
-## Notes
+### When you forget later
 
-- This repo is infrastructure-level, not app-level.
-- App repositories such as PhotoSite should document their dependency on this protection, but should not treat live files under `/usr/local` or `/etc/systemd/system` as the source of truth.
+If you only have a minute to re-understand the allowlist, run:
 
-## Shared host monitoring
+```bash
+sudo systemctl status cloudflare-docker-allowlist.timer
+sudo systemctl status cloudflare-docker-allowlist.service
+sudo iptables -S DOCKER-USER
+sudo ip6tables -S DOCKER-USER
+```
 
-This repo now also includes a lightweight network traffic logger intended for any Raspberry Pi host in the homelab.
+Ask yourself:
 
-It writes one JSON line per run from kernel interface counters so Filebeat or Logstash can ship the data into ELK. That makes it easy to graph per-host network usage over time and answer a practical question during slowdowns:
+1. Is the timer active?
+2. Did the last service run succeed?
+3. Is there still a final drop for Docker-published `80/443`?
+4. Are there `RETURN` rules above it for Cloudflare, LAN, Docker bridges, and established traffic?
 
-"Was `pi5`, `pi4`, or `pi3` actually moving unusual traffic at that moment?"
+## Host network traffic logger
 
-The logger is generic and host-configurable through an environment file. The same service can be installed on all three Pis with different values for:
+### What problem it solves
 
-- `NETWORK_TRAFFIC_INTERFACE`
-- `NETWORK_TRAFFIC_ROLE`
-- `NETWORK_TRAFFIC_SITE`
+This logger records simple network traffic samples from Linux kernel counters.
 
-That keeps the code shared while making the host identity explicit in Kibana.
+Each run writes one JSON line so the data can later be shipped into ELK and graphed. The aim is to answer questions like:
 
-## Install the host network traffic logger
+"Which Pi was moving unusual traffic when the network became slow?"
 
-The host network logger now has a deterministic installer. One command installs the script, writes the host config, writes a timer override for the sample cadence, reloads systemd, enables the timer, and starts the service and timer unless you opt out.
+### How it works
+
+The traffic logger is not a forever-running daemon.
+
+Instead:
+
+- the `.service` runs the Python logger once
+- the `.timer` decides when that one-shot run happens
+
+The service runs this program:
+
+- `/usr/bin/python3 /usr/local/sbin/host-network-traffic-logger.py ...`
+
+That Python program reads interface counters from `/proc/net/dev`, compares them with the previous saved state, and appends one JSON record to the log.
+
+### Traffic logger lifecycle
+
+This is the easiest mental model to keep in your head:
+
+1. The machine boots.
+2. `systemd` starts the enabled timer.
+3. The timer waits for `OnBootSec`.
+4. The timer starts the logger service.
+5. The service writes one sample and exits.
+6. The timer waits for `OnUnitActiveSec`.
+7. Repeat.
+
+So after a reboot, the logger comes back automatically because the timer is enabled.
+
+### Why the service often looks inactive
+
+This is normal and important.
+
+The logger service is a one-shot service. It runs briefly and exits.
+
+So the healthy state is usually:
+
+- `host-network-traffic-logger.timer`: active and waiting
+- `host-network-traffic-logger.service`: inactive except for the brief moment when it runs
+
+If the service shows a successful last run and the timer is active, that is usually fine.
+
+### Live config files the installer writes
+
+The installer writes these live files:
+
+- `/usr/local/sbin/host-network-traffic-logger.py`: the installed logger program
+- `/etc/default/host-network-traffic-logger`: host-specific settings such as interface and log directory
+- `/etc/systemd/system/host-network-traffic-logger.service`: the installed service unit
+- `/etc/systemd/system/host-network-traffic-logger.timer`: the installed timer unit
+- `/etc/systemd/system/host-network-traffic-logger.timer.d/override.conf`: the live schedule override written by the installer
+- `/etc/logrotate.d/host-network-traffic-logger`: the log rotation policy
+
+The important distinction is:
+
+- repo files are the source of truth you edit here
+- `/etc/...` files are the installed live copies on the host
+
+### Install the host network traffic logger
 
 Run as root or via `sudo`:
 
@@ -156,26 +306,50 @@ sudo ./install-host-network-traffic-logger.sh --interface wlan0 --site home
 
 Useful options:
 
-- `--config-file PATH`: load host defaults from a repo-managed env file.
-- `--interface NAME`: interface to monitor. If omitted, the installer auto-detects the default route interface.
-- `--role NAME`: optional host role tag.
-- `--site NAME`: site tag for ELK dashboards. Default: `home`.
-- `--interval-seconds N`: sample cadence. Default: `60`.
-- `--no-start`: install and enable, but do not start immediately.
+- `--config-file PATH`: load host defaults from a repo-managed env file
+- `--interface NAME`: interface to monitor; if omitted, the installer auto-detects the default route interface
+- `--role NAME`: optional host role tag
+- `--site NAME`: site tag for dashboards; default is `home`
+- `--log-dir PATH`: where to write JSONL logs
+- `--state-dir PATH`: where to keep the previous sample state
+- `--interval-seconds N`: sample cadence; default is `60`
+- `--no-start`: install and enable, but do not start immediately
 
-The installer writes:
+The installer does all of this in one go:
 
-- `/usr/local/sbin/host-network-traffic-logger.py`
-- `/etc/default/host-network-traffic-logger`
-- `/etc/systemd/system/host-network-traffic-logger.service`
-- `/etc/systemd/system/host-network-traffic-logger.timer`
-- `/etc/systemd/system/host-network-traffic-logger.timer.d/override.conf`
+- copies the Python logger into `/usr/local/sbin/`
+- installs the service and timer into `/etc/systemd/system/`
+- installs the logrotate file
+- writes `/etc/default/host-network-traffic-logger`
+- writes the timer override file
+- creates the log and state directories
+- reloads `systemd`
+- enables the timer
+- by default, restarts both the service and timer immediately
 
-For `pi5`, the repo-managed host config now points the JSONL output at the mounted project log disk:
+### What happens if you run the installer again
 
-- `/mnt/website_and_cold_storage/website/logs/host-network-traffic/`
+Re-running the installer is usually an update, not a destructive rebuild.
 
-That sits alongside the other project log directories already living under `/mnt/website_and_cold_storage/website/logs/`.
+It will:
+
+- refresh the installed program and unit files
+- rewrite the host config file
+- rewrite the timer override with the selected interval
+- reload `systemd`
+- ensure the timer is enabled
+- restart the service and timer immediately unless `--no-start` is used
+
+In practical terms, a reinstall usually means:
+
+- one fresh sample may be taken immediately
+- the timer schedule starts counting again from that restart point
+
+If you want to update the installed files without immediately restarting the active schedule, use:
+
+```bash
+sudo ./install-host-network-traffic-logger.sh --no-start ...
+```
 
 ### Example commands per host
 
@@ -207,7 +381,7 @@ If you want higher-frequency sampling temporarily during investigation:
 sudo ./install-host-network-traffic-logger.sh --interface wlan0 --site home --interval-seconds 10
 ```
 
-Use the 10-second cadence for short diagnostic windows, not as the default forever setting, unless you also rotate logs deliberately.
+Use the 10-second cadence for short diagnostic windows, not as the permanent default, unless you are intentionally rotating logs for that higher volume.
 
 ### Log rotation
 
@@ -218,7 +392,7 @@ That policy:
 - rotates daily
 - keeps 30 rotated files
 - compresses old logs
-- uses `copytruncate` so the active JSONL file can keep being written without service interruption
+- uses `copytruncate` so the active JSONL file can keep being written without stopping the service pattern
 
 ### Verify
 
@@ -229,8 +403,36 @@ sudo systemctl list-timers --all | grep host-network-traffic
 sudo cat /etc/default/host-network-traffic-logger
 sudo cat /etc/systemd/system/host-network-traffic-logger.timer.d/override.conf
 sudo cat /etc/logrotate.d/host-network-traffic-logger
-sudo tail -n 5 /var/log/host-network-traffic/network_traffic_$(hostname).jsonl
+LOG_DIR=$(grep '^NETWORK_TRAFFIC_LOG_DIR=' /etc/default/host-network-traffic-logger | cut -d= -f2-)
+sudo tail -n 5 "$LOG_DIR"/network_traffic_$(hostname).jsonl
 ```
+
+What to look for:
+
+- the timer should be `active (waiting)`
+- the service should show a successful recent run, even if it is currently inactive
+- `/etc/default/host-network-traffic-logger` should show the interface and log directory you expect
+- the override file should show the interval you expect
+- the JSONL log should contain recent entries with the current hostname and byte deltas
+
+### When you forget later
+
+If you only have 60 seconds to re-understand the logger, run:
+
+```bash
+sudo systemctl status host-network-traffic-logger.timer
+sudo systemctl status host-network-traffic-logger.service
+sudo cat /etc/default/host-network-traffic-logger
+sudo cat /etc/systemd/system/host-network-traffic-logger.timer.d/override.conf
+```
+
+Ask yourself:
+
+1. Is the timer active?
+2. Did the last service run succeed?
+3. Is the correct interface configured?
+4. Is the log directory what I expected?
+5. Is the interval still what I intended?
 
 ## ELK ingest
 
@@ -241,13 +443,13 @@ Example ingest snippets live here:
 
 Recommended approach:
 
-1. Use Filebeat `filestream` with NDJSON parsing against `/var/log/host-network-traffic/*.jsonl`.
+1. Use Filebeat `filestream` with NDJSON parsing against the actual configured log directory.
 2. Preserve fields like `host_name`, `role`, `site`, `tx_bytes_delta`, `rx_bytes_delta`, and `window_seconds` at the top level.
 3. In Logstash, coerce `rx_bytes_delta`, `tx_bytes_delta`, and `window_seconds` to numeric types if your pipeline would otherwise treat them as strings.
 
 Dashboard guidance lives in `monitoring/network-traffic/kibana-dashboard-notes.md`.
 
-The logger now emits a deliberately slim event shape:
+The logger emits a deliberately slim event shape:
 
 - `timestamp`
 - `host_name`
@@ -258,16 +460,21 @@ The logger now emits a deliberately slim event shape:
 - `rx_bytes_delta`
 - `tx_bytes_delta`
 
-If you want bytes-per-second in Kibana, derive it from `*_bytes_delta / window_seconds` rather than storing the precomputed rate in every event.
+If you want bytes-per-second in Kibana, derive it from `*_bytes_delta / window_seconds` rather than storing the calculated rate in every event.
+
+## Notes
+
+- This repo is infrastructure-level, not app-level.
+- App repositories such as PhotoSite should document their dependency on this protection, but should not treat live files under `/usr/local` or `/etc/systemd/system` as the source of truth.
 
 ## Structure and naming
 
-The current repo name is slightly narrower than the scope you now want, but I would not rush into renaming it yet.
+The current repo name is slightly narrower than the scope the contents are growing into, but it is still reasonable to keep it for now.
 
 Practical recommendation:
 
-1. Keep the repo name as `pi5-infra` for now so existing references and machine context stay stable.
-2. Broaden the internal structure so shared assets live under clearly generic paths such as `monitoring/`, `systemd/`, and `config/`.
-3. Treat Pi5-specific items as one category inside the repo rather than the repo's only purpose.
+1. Keep the repo name as `pi5-infra` for now so existing references stay stable.
+2. Keep broadening the internal structure under generic paths such as `monitoring/`, `systemd/`, and `config/`.
+3. Treat Pi5-specific items as one category inside the repo, not the repo's only purpose.
 
-If the repo later becomes the canonical source for multiple hosts and starts carrying substantial `pi3` and `pi4` automation, then a rename to something like `homelab-infra` or `pi-infra` becomes justified. Right now the lower-risk move is to broaden the structure first and rename only after the contents prove the broader remit.
+If this becomes the canonical infra repo for multiple hosts and accumulates substantially more shared automation, a later rename to something like `pi-infra` or `homelab-infra` would make more sense.
