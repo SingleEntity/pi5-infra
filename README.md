@@ -9,14 +9,15 @@ It currently contains two main jobs:
 1. A Cloudflare Docker allowlist that protects published `80/443` traffic.
 2. A host network traffic logger that writes JSONL samples for later analysis in ELK.
 
-## Quick mental model
+## Quick mental model for the network traffic logger and cloudflare allowlist
 
 If you come back to this repo after months away, this is the main pattern to remember:
 
-- the real work is done by a script or Python program
+- the real work is done by a script or Python program for both
+- both work via systemd processes setup by deployment scripts in this repo
 - a `.service` file tells `systemd` how to run that job
 - a `.timer` file tells `systemd` when to run that job
-- an installer script copies everything to the live machine and enables the right timer
+- an installer script copies the required files into the correct paths on the live host and enables the relevant service or timer
 
 Think of it like this:
 
@@ -30,12 +31,19 @@ This is standard Linux `systemd` behavior, not a custom convention invented in t
 
 ### Cloudflare allowlist
 
+Job parts:
+
 - `cloudflare-docker-allowlist/cloudflare-docker-allowlist.sh`: the actual firewall script
 - `systemd/cloudflare-docker-allowlist.service`: how to run that script as a systemd job
 - `systemd/cloudflare-docker-allowlist.timer`: when to run it again automatically
+
+Installer:
+
 - `install-cloudflare-docker-allowlist.sh`: copies those files into the live system and enables them
 
 ### Traffic logger
+
+Job parts:
 
 - `monitoring/network-traffic/network_traffic_logger.py`: the actual logger program
 - `systemd/host-network-traffic-logger.service`: how to run one logger sample
@@ -45,6 +53,9 @@ This is standard Linux `systemd` behavior, not a custom convention invented in t
 - `config/hosts/pi4-host-network-traffic-logger.env`: Pi4 host config
 - `config/hosts/pi3-host-network-traffic-logger.env`: Pi3 host config
 - `logrotate/host-network-traffic-logger`: log rotation policy
+
+Installer:
+
 - `install-host-network-traffic-logger.sh`: installs the logger, config, timer, and logrotate policy
 
 ### ELK ingest examples
@@ -55,9 +66,9 @@ This is standard Linux `systemd` behavior, not a custom convention invented in t
 
 ## How `systemd` service and timer pairs work
 
-This repo uses a common `systemd` pattern.
+This repo uses a common `systemd` pattern which launches the processes on the timer after boot.
 
-A `.service` file describes a job. It usually contains:
+A `.service` file describes a job It usually contains:
 
 - a description
 - the command to run
